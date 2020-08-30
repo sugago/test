@@ -1,0 +1,846 @@
+// ==UserScript==
+// @name         MySimpleConnection autofill
+// @namespace    http://tampermonkey.net/
+// @updateURL    gist.githubusercontent.com/jeznag/3c148e4ae3f0db8be41dd192baae9897/raw/autofill
+// @version      1.0.0
+// @description  Autofill data from Zoho CRM
+// @author       Jeremy Nagel
+// @match        *://*/*
+// @grant        GM_setValue
+// @grant        GM_getValue
+// ==/UserScript==
+
+(function() {
+  "use strict";
+
+  function inIframe() {
+    try {
+      return window.self !== window.top;
+    } catch (e) {
+      return true;
+    }
+  }
+
+  let currentLocation;
+  function handlePage() {
+    currentLocation = window.location.href;
+    const LOCAL_STORAGE_KEY = "currentCRMAutofill";
+    document.querySelectorAll("#copyButton").forEach(el => el.remove());
+
+    if (
+      (location.href.includes("crm.zoho.com") ||
+        location.href.includes("crmplus.zoho.com")) &&
+      !inIframe() &&
+      location.href.match(/Leads\/[\d]/)
+    ) {
+      setTimeout(() => {
+        document.querySelectorAll("#copyButton").forEach(el => el.remove());
+        const copyButton = document.createElement("div");
+        copyButton.innerHTML = `<div id="copyButton" style="z-index: 99999; display: block; position: fixed; top: 30px;"><button id="copy_data">Copy Data</button></div>`;
+        document.body.appendChild(copyButton);
+        document.querySelector("#copy_data").addEventListener("click", e => {
+          const waitForReturnJSON = setInterval(() => {
+            if (typeof returnJson !== "undefined") {
+              const crmData = Object.keys(returnJson.entityMapJson).reduce(
+                (resultMap, fieldKey) => {
+                  const fieldData = returnJson.entityMapJson[fieldKey];
+                  const fieldLabel = fieldData.displaylabel || fieldKey;
+                  resultMap[fieldLabel] = fieldData.defaultvalue;
+                  return resultMap;
+                },
+                {}
+              );
+
+              const processedCRMData = {
+                ...crmData,
+                "Service Address": crmData.Street,
+                "Service Unit/Apt": crmData["Apt number"],
+                "Service City": crmData.City,
+                "Service Zip Code": crmData["Zip Code"],
+                "Service State": crmData.State,
+                DOB: crmData["Date of Birth"],
+                Mobile: crmData.Mobile || crmData.Phone,
+                "Activation Date": crmData["move in date"],
+                "Billing is same": "true", //TODO
+                Ebilling: "yes", //TODO
+                "Lead Name": crmData["Webform Name"],
+                "Social Security": crmData["Social Security Number"],
+                "Activation Type": "New"
+              };
+
+              GM_setValue(LOCAL_STORAGE_KEY, JSON.stringify(processedCRMData));
+              clearInterval(waitForReturnJSON);
+              const autoFillNotice = document.createElement("div");
+              autoFillNotice.innerHTML = `<div id="autoFillNotice" class="zread_strip wmsanninfo_strip" style="z-index: 999; display: block;"><div id="wmsannmsg" class="zread_olymn wmsanninfo_bg" style="display: block; z-index: 999; top: 3px;"><span id="annmsg">Lead Data Copied For AutoFill<div id="hideinfo" class="zchdr_arw"></div><a id="clearannmsg" style="text-decoration:underline; float:right; font-size: 11px; margin: 2px 25px 0px 0px">Do not show again</a></div></div>`;
+              document.body.appendChild(autoFillNotice);
+              setTimeout(() => {
+                document.querySelector("#autoFillNotice").remove();
+              }, 4000);
+            }
+          }, 500);
+          e.preventDefault();
+          return false;
+        });
+      }, Math.random() * 50);
+    } else {
+      const crmDataString = GM_getValue(LOCAL_STORAGE_KEY);
+      const shouldAutofillOnThisPage =
+        location.href.includes("ambit") ||
+        location.href.includes(
+          "www.bandwidthbuilders.com/secure/charter/order"
+        ) ||
+        location.href.includes("www.bandwidthbuilders.com/secure/legacy/") ||
+        location.href.includes("buy.spectrum.com") ||
+        location.href.includes("retail.spectrum.com") ||
+        location.href.includes("affordablerentersinsurance") ||
+        location.href.includes("www.charter-retailportal.com/BuyFlow.aspx");
+
+      if (crmDataString && shouldAutofillOnThisPage) {
+        document.querySelectorAll("#autoFillNotice").forEach(el => el.remove());
+        const autoFillButtonWrapper = document.createElement("div");
+        autoFillButtonWrapper.innerHTML = `<div id="autoFillNotice" class="zread_strip wmsanninfo_strip" style="z-index: 999999; display: block; position: fixed; top: 30px; background-color: green;"><div id="wmsannmsg" class="zread_olymn wmsanninfo_bg" style="display: block; z-index: 999; top: 3px;"><button id="start_autofill">Autofill Data</button><div id="hideinfo" class="zchdr_arw"></div></div></div>`;
+        document.body.appendChild(autoFillButtonWrapper);
+        document
+          .querySelector("#start_autofill")
+          .addEventListener("click", autoFillForm);
+      }
+
+      handleEnrolleeAutoFill();
+    }
+
+    const STATE_TO_STATE_CODE_MAPPINGS = {
+        Texas: "TX",
+        "New York": "NY",
+        Massachusetts: "MA",
+        Connecticut: "CT",
+        "Rhode Island": "RI",
+        California: "CA",
+        Delaware: "DE",
+        Illinois: "IL",
+        Indiana: "IN",
+        Maine: "ME",
+        Maryland: "MD",
+        "New Hampshire": "NH",
+        "New Jersey": "NJ",
+        Ohio: "OH",
+        Pennsylvania: "PA",
+        Virginia: "VA"
+     };
+
+    function handleEnrolleeAutoFill() {
+      const ENROLLEE_LOCAL_STORAGE_KEY = "AMBIT_ENROLLEE_DATA";
+
+      if (location.href.includes("enroll.ambitenergy.com/consultant.php")) {
+        const existingWrapper = document.querySelector("#auto-fill-wrapper");
+        if (existingWrapper) {
+          existingWrapper.remove();
+        }
+        const autoFillWrapper = document.createElement("div");
+
+        autoFillWrapper.innerHTML = `<div id="auto-fill-wrapper" style="position: fixed; top: 10px;">
+                  <input id="enrollee-data" type="textarea" placeholder="Paste row from spreadsheet here" style="width: 400px; height: 50px;">
+               </div>`;
+        document.body.appendChild(autoFillWrapper);
+
+        updateTextFieldValue(
+            '.step:not([class*="hide"]) [ng-model="Consultant.CommissionPayment.TaxID"]',
+            () => {
+                const crmDataString = GM_getValue(ENROLLEE_LOCAL_STORAGE_KEY);
+                const { socialSecurityNumber } = JSON.parse(crmDataString);
+                return socialSecurityNumber.replace(/-/g, '')
+            },
+            2000
+        );
+
+        updateTextFieldValue(
+            '.step:not([class*="hide"]) [ng-model="Consultant.Documents.AgreeName"]',
+            () => {
+                const crmDataString = GM_getValue(ENROLLEE_LOCAL_STORAGE_KEY);
+                const { firstName, lastName } = JSON.parse(crmDataString);
+                return `${firstName} ${lastName}`;
+            },
+            2000
+        );
+
+        clickWhenAppears(
+            '.step:not([class*="hide"]) [name="PaymentTypePreference"][value="check"]',
+            3000
+        );
+
+        clickWhenAppears(
+            `.step:not([class*="hide"]) [ng-click="Consultant.Account.HasSecondaryContact = 'false'"]`,
+            3000
+        );
+
+        const enrolleeTextArea = document.querySelector("#enrollee-data");
+        enrolleeTextArea.addEventListener("change", e => {
+          const [
+            timestamp,
+            referredBy,
+            firstName,
+            lastName,
+            streetAddress,
+            city,
+            state,
+            zipCode,
+            cellPhone,
+            emailAddress,
+            dateOfBirth,
+            socialSecurityNumber
+          ] = e.target.value.split("\t");
+          const enrolleeData = {
+            timestamp,
+            referredBy,
+            firstName,
+            lastName,
+            streetAddress,
+            city,
+            state,
+            zipCode,
+            cellPhone,
+            emailAddress,
+            dateOfBirth,
+            socialSecurityNumber
+          };
+
+          GM_setValue(ENROLLEE_LOCAL_STORAGE_KEY, JSON.stringify(enrolleeData));
+          updateTextFieldValue(
+            '[ng-model="Consultant.Information.FirstName"]',
+            firstName
+          );
+          updateTextFieldValue(
+            '[ng-model="Consultant.CommissionPayment.TaxID"]',
+            socialSecurityNumber
+          );
+          updateTextFieldValue(
+            '[ng-model="Consultant.Information.LastName"]',
+            lastName
+          );
+          updateTextFieldValue(
+            '[ng-model="Consultant.Information.Address1"]',
+            streetAddress
+          );
+          updateTextFieldValue(
+            '[ng-model="Consultant.Information.City"]',
+            city
+          );
+
+          const stateCode = state.length > 2 ? STATE_TO_STATE_CODE_MAPPINGS[state] : state.toUpperCase();
+          updateTextFieldValue(
+            '[ng-model="Consultant.Information.State"]',
+            stateCode
+          );
+          updateTextFieldValue(
+            '[ng-model="Consultant.Information.Zipcode"]',
+            zipCode
+          );
+          updateTextFieldValue(
+            '[ng-model="Consultant.Information.EmailAddresses[0].Email"]',
+            emailAddress
+          );
+          updateTextFieldValue(
+            '[ng-model="Consultant.Information.PhoneNumbers[0].Number"]',
+            cellPhone.replace(/-/g, "")
+          );
+          document
+            .querySelector(
+              `[ng-click="Consultant.Information.PhoneNumbers[0].PhoneType = 'C'"]`
+            )
+            .click();
+
+          const dateOfBirthDate = new Date(dateOfBirth);
+          updateTextFieldValue(
+            '[ng-model="Consultant.Information.DateOfBirth_Month"]',
+            dateOfBirthDate.getMonth() + 1
+          );
+          updateTextFieldValue(
+            '[ng-model="Consultant.Information.DateOfBirth_Day"]',
+            dateOfBirthDate.getDate()
+          );
+          updateTextFieldValue(
+            '[ng-model="Consultant.Information.DateOfBirth_Year"]',
+            dateOfBirthDate.getFullYear()
+          );
+          updateTextFieldValue(
+            '[ng-model="Consultant.Information.LanguagePref"]',
+            "en"
+          );
+        });
+      }
+    }
+
+    function splitWithMaximumItems(string, separator, maxItems) {
+      const stringParts = string.split(separator);
+      const result = [];
+      for (let i = 0; i < stringParts.length; i++) {
+        if (i < maxItems) {
+          result.push(stringParts[i]);
+        } else {
+          result[result.length - 1] += `${separator}${stringParts[i]}`;
+        }
+      }
+      return result;
+    }
+
+    function getStreetAddressParts(streetAddress, apartmentNumber) {
+      const addressParts = streetAddress.split("#");
+      const apartmentNumberFromAddress =
+        addressParts.length > 1 ? addressParts[1] : "";
+      const streetDetails = addressParts[0]
+        .split(" ")
+        .filter(part => part.length);
+      const streetNumber = streetDetails[0];
+      let streetType = streetDetails[streetDetails.length - 1];
+      let streetName = streetDetails
+        .slice(1, streetDetails.length - 1)
+        .join(" ");
+      let streetDirection = "";
+      if (
+        streetType === "E" ||
+        streetType === "N" ||
+        streetType === "S" ||
+        streetType === "W"
+      ) {
+        streetDirection = streetDetails[streetDetails.length - 1];
+        streetType = streetDetails[streetDetails.length - 2];
+        streetName = streetDetails.slice(1, streetDetails.length - 2).join(" ");
+      }
+
+      return {
+        streetNumber,
+        streetType,
+        streetName,
+        streetDirection,
+        apartmentNumber: apartmentNumber || apartmentNumberFromAddress
+      };
+    }
+
+    function dispatchChangeEvent(inputElement) {
+      const changeEvent = new Event("change");
+      inputElement.dispatchEvent(changeEvent);
+
+      const inputEvent = new Event("input");
+      inputElement.dispatchEvent(inputEvent);
+
+      const blurEvent = new Event("blur");
+      inputElement.dispatchEvent(blurEvent);
+    }
+
+    function clickWhenAppears(selector, maxWaits = 100) {
+      let numWaits = 0;
+      const waitForElement = setInterval(() => {
+        const input = document.querySelector(selector);
+        if (input) {
+          input.click();
+          clearInterval(waitForElement);
+        }
+        numWaits++;
+        if (numWaits > maxWaits) {
+          clearInterval(waitForElement);
+        }
+      }, 200);
+    }
+
+    function updateTextFieldValue(selector, newValue, maxWaits = 1000) {
+      let numWaits = 0;
+      const waitForElement = setInterval(() => {
+        const input = document.querySelector(selector);
+        if (input) {
+          if (typeof newValue === 'function') {
+            input.value = newValue();
+          } else {
+              input.value = newValue;
+          }
+          dispatchChangeEvent(input);
+          clearInterval(waitForElement);
+        }
+        numWaits++;
+        if (numWaits > maxWaits) {
+          clearInterval(waitForElement);
+        }
+      }, 50);
+    }
+
+    function updateCheckboxValue(selector, isChecked) {
+      let numWaits = 0;
+      const waitForElement = setInterval(() => {
+        const input = document.querySelector(selector);
+        if (input) {
+          input.checked = isChecked;
+          dispatchChangeEvent(input);
+          clearInterval(waitForElement);
+        }
+        numWaits++;
+        if (numWaits > 100) {
+          clearInterval(waitForElement);
+        }
+      }, 200);
+    }
+
+    function zeroPad(numberToPad) {
+      if (numberToPad.toString().length < 2) {
+        return `0${numberToPad.toString()}`;
+      }
+      return numberToPad;
+    }
+
+    function getDateString(date) {
+      return (
+        zeroPad(date.getMonth() + 1) +
+        "/" +
+        zeroPad(date.getDate()) +
+        "/" +
+        zeroPad(date.getFullYear())
+      );
+    }
+
+    function getDateStringNonZeroPadded(date) {
+      return (
+        date.getMonth() + 1 + "/" + date.getDate() + "/" + date.getFullYear()
+      );
+    }
+
+    function autoFillForm() {
+      const crmDataString = GM_getValue(LOCAL_STORAGE_KEY);
+      const crmData = JSON.parse(crmDataString);
+      const nameParts = splitWithMaximumItems(
+        (crmData["Lead Name"] || crmData["Customer Name"] || "").trim(),
+        " ",
+        2
+      );
+      const firstName = (crmData.FIRSTNAME || nameParts[0]).trim();
+      const lastName = (crmData.FIRSTNAME ? nameParts[0] : nameParts[1]).trim();
+
+      const stateAbbreviation =
+        STATE_TO_STATE_CODE_MAPPINGS[
+          crmData["Service State"] || crmData["Service State"]
+        ];
+      const dateOfBirthDate = new Date(crmData.DOB);
+      const dobString = getDateString(dateOfBirthDate);
+
+      if (
+        location.href.includes("buy.spectrum.com/buyflow/enter-your-info") ||
+        location.href.includes(
+          "https://retail.spectrum.com/buyflow/enter-your-info"
+        )
+      ) {
+        updateTextFieldValue('[name="firstname"]', firstName);
+        updateTextFieldValue('[name="lastname"]', lastName);
+        updateTextFieldValue('[name="phoneNumber"]', crmData.Mobile);
+        updateTextFieldValue('[name="email"]', crmData.Email);
+        updateTextFieldValue('[name="confirmEmail"]', crmData.Email);
+        document.querySelector('[id="phone-type-mobile-label"]').click();
+        document.querySelector('[id="over_a_year_over_1_year"]').click();
+        document
+          .querySelector('[id="billingAddressSameAsHomeAddressYesLabel"]')
+          .click();
+
+        updateTextFieldValue(
+          '[id="agent-email"]',
+          "stacie@mysimpleconnection.com"
+        );
+        updateTextFieldValue(
+          '[id="agent-confirm-email"]',
+          "stacie@mysimpleconnection.com"
+        );
+
+        updateTextFieldValue(
+          '[id="previousAddress"]',
+          crmData["Previous Address"]
+        );
+        updateTextFieldValue(
+          '[id="previousAddressCity"]',
+          crmData["Previous City"]
+        );
+        const prevStateAbbrev =
+          STATE_TO_STATE_CODE_MAPPINGS[crmData["Previous State"]];
+        updateTextFieldValue('[id="previousAddressState"]', prevStateAbbrev);
+        updateTextFieldValue(
+          '[id="previousAddressZipCode"]',
+          crmData["Previous Zip"]
+        );
+      }
+
+      if (
+        location.href.includes(
+          "www.bandwidthbuilders.com/secure/legacy/index.php?m=standard_provider_program&a=standard_provider_program"
+        )
+      ) {
+        updateTextFieldValue('[name="addr1"]', crmData["Service Address"]);
+        updateTextFieldValue('[name="apt"]', crmData["Service Unit/Apt"]);
+        updateTextFieldValue('[name="zip"]', crmData["Service Zip Code"]);
+      }
+
+      if (
+        location.href.includes(
+          "retail.spectrum.com/buyflow/credit-risk-assessment"
+        )
+      ) {
+        updateTextFieldValue('[name="addr1"]', crmData["Service Address"]);
+        updateTextFieldValue('[name="apt"]', crmData["Service Unit/Apt"]);
+        updateTextFieldValue('[name="email"]', crmData.Email);
+        updateTextFieldValue('[name="confirmEmail"]', crmData.Email);
+
+        // updateTextFieldValue('[id="previousAddress"]', crmData["Previous Address"]);
+        // updateTextFieldValue('[id="previousAddressCity"]', crmData["Previous City"]);
+        // const prevStateAbbrev = STATE_TO_STATE_CODE_MAPPINGS[crmData["Previous State"]];
+        // updateTextFieldValue('[id="previousAddressState"]', prevStateAbbrev);
+        // updateTextFieldValue('[id="previousAddressZipCode"]', crmData["Previous Zip"]);
+
+        updateTextFieldValue(
+          '[name="selectedMonth"]',
+          dateOfBirthDate.getMonth()
+        );
+        updateTextFieldValue(
+          '[name="selectedDay"]',
+          dateOfBirthDate.getDate() - 1
+        );
+        const relevantYearEl = document.evaluate(
+          `//*[@name="selectedYear"]/option[text()="${dateOfBirthDate.getFullYear()}"]`,
+          document,
+          null,
+          XPathResult.FIRST_ORDERED_NODE_TYPE,
+          null
+        ).singleNodeValue;
+        updateTextFieldValue('[name="selectedYear"]', relevantYearEl.value);
+
+        document.querySelector('[id="phone-type-mobile-label"]').click();
+        document.querySelector('[id="address-changed-no"]').click();
+      }
+
+      if (
+        location.href.includes("www.bandwidthbuilders.com/secure/charter/order")
+      ) {
+        const addressWithAppt = `${crmData["Service Address"]}, #${
+          crmData["Service Unit/Apt"]
+        }`;
+        updateTextFieldValue('[name="first_name"]', firstName);
+        updateTextFieldValue('[name="last_name"]', lastName);
+        updateTextFieldValue('[name="phone"]', crmData.Mobile);
+        updateTextFieldValue('[name="email"]', crmData.Email);
+        updateTextFieldValue('[name="addr1"]', addressWithAppt);
+        updateTextFieldValue('[name="zip"]', crmData["Service Zip Code"]);
+        document.querySelector('[name="moving"][value="true"]').click();
+        document.querySelector('[name="present"][value="false"]').click();
+      }
+
+      if (location.href.includes("ambitservice.myambit.com/rates-and-plans") || location.href.includes("promocode.myambit.com/rates-and-plans")) {
+        updateTextFieldValue("#zip", crmData["Service Zip Code"]);
+        updateCheckboxValue("#residential", true);
+        updateCheckboxValue("#no-currentcustomer", true);
+      }
+
+      if (
+        location.href.includes(
+          "customerenrollment.ambitenergy.com/Common/Plans/AreYouExistingCustomer"
+        )
+      ) {
+        updateCheckboxValue("#ExistingNo", true);
+        updateCheckboxValue("#CustResi", true);
+      }
+
+      if (
+        location.href.includes(
+          "customerenrollment.ambitenergy.com/Common/Service/AccountInformation/"
+        )
+      ) {
+        updateTextFieldValue("#BillingAddress_BillingFirstName", firstName);
+        updateTextFieldValue("#BillingAddress_BillingLastName", lastName);
+        updateTextFieldValue(
+          "#BillingAddress_Address1",
+          crmData["Service Address"]
+        );
+        updateTextFieldValue("#BillingAddress_City", crmData["Service City"]);
+        updateTextFieldValue("#BillingAddress_State", stateAbbreviation);
+        updateTextFieldValue(
+          "#BillingAddress_Zipcode",
+          crmData["Service Zip Code"]
+        );
+      }
+
+      if (location.href.includes("customer.ambitenergy.com/enrollee")) {
+        updateTextFieldValue(
+          "#AddressLine1-serviceAddress",
+          crmData["Service Address"]
+        );
+        updateTextFieldValue(
+          '[name="AddressLine2-serviceAddress"]',
+          crmData["Service Unit/Apt"] ? `#${crmData["Service Unit/Apt"]}` : ""
+        );
+        updateTextFieldValue("#City-serviceAddress", crmData["Service City"]);
+        updateTextFieldValue("#FirstName", firstName);
+        updateTextFieldValue("#LastName", lastName);
+        updateTextFieldValue("#SSN", crmData["Social Security"]);
+        updateTextFieldValue("#DOB", dobString);
+        updateCheckboxValue("#AuthorizeCreditCheck", true);
+        updateTextFieldValue("#CellPhone", crmData.Mobile);
+        updateCheckboxValue("#AuthorizeSMS", true);
+        updateTextFieldValue("#Email", crmData.Email);
+        updateTextFieldValue("#VerifyEmail", crmData.Email);
+
+        if (crmData["Activation Type"] === "New") {
+          document.querySelector("#switch").click();
+          const moveDateString = getDateString(
+            new Date(crmData["Activation Date"])
+          );
+          updateTextFieldValue(
+            '[ng-model="vm.switchModel.requestedStartDate"]',
+            moveDateString
+          );
+        } else {
+          document.querySelector("#moveIn").click();
+        }
+
+        if (crmData["Billing is same"].toLowerCase() === "true") {
+          setTimeout(
+            () => document.querySelector("#billingServiceSameYes").click(),
+            500
+          );
+        } else {
+          document.querySelector("#billingServiceSameNo").click();
+          updateTextFieldValue(
+            '[id="vm.addressField"]',
+            crmData["Billing Address"]
+          );
+          updateTextFieldValue('[id="vm.cityField"]', crmData["Billing City"]);
+          const billingStateAbbreviation =
+            STATE_TO_STATE_CODE_MAPPINGS[crmData["Billing State"]];
+          updateTextFieldValue("#BState", `string:${billingStateAbbreviation}`);
+          updateTextFieldValue(
+            '[id="vm.zipcodeField"]',
+            crmData["Billing Zip Code"]
+          );
+        }
+
+        if (crmData.Ebilling.toLowerCase() === "yes") {
+          setTimeout(
+            () => document.querySelector("#PaperlessBillingYes").click(),
+            500
+          );
+        } else {
+          setTimeout(
+            () => document.querySelector("#PaperlessBillingNo").click(),
+            500
+          );
+        }
+
+        document.querySelector('[id="hasSecondaryContactNo"]').click();
+        document.querySelector('[id="notInterestedSP"]').click();
+        document.querySelector('[id="notInterestedAC"]').click();
+      }
+
+      if (
+        location.href.includes(
+          "customerenrollment.ambitenergy.com/Common/Plans/ZipcodeLookup"
+        )
+      ) {
+        updateCheckboxValue("#CustType1", true);
+        updateTextFieldValue("#Zipcode", crmData["Service Zip Code"]);
+        updateTextFieldValue(
+          "#ServiceSetup_HowHeardAboutAmbit",
+          "A Consultant Referral"
+        );
+      }
+
+      if (
+        location.href.includes(
+          "customerenrollment.ambitenergy.com/Common/Service/ServiceLocation"
+        )
+      ) {
+        updateCheckboxValue("#LocationAddress", true);
+
+        const {
+          streetNumber,
+          streetDirection,
+          streetName,
+          streetType,
+          apartmentNumber
+        } = getStreetAddressParts(
+          crmData["Service Address"],
+          crmData["Service Unit/Apt"]
+        );
+        updateTextFieldValue("#StreetNumber", streetNumber);
+        updateTextFieldValue("#StreetDirection", streetDirection);
+        updateTextFieldValue("#StreetName", streetName);
+        updateTextFieldValue("#StreetSuffix", streetType);
+        updateTextFieldValue("#ApartmentNumber", apartmentNumber);
+        updateTextFieldValue("#City", crmData["Service City"]);
+        updateTextFieldValue("#State", stateAbbreviation);
+        updateTextFieldValue("#Zipcode", crmData["Service Zip Code"]);
+      }
+
+      if (
+        location.href.includes(
+          "www.affordablerentersinsurance.com/quote_findlocation.aspx"
+        )
+      ) {
+        updateTextFieldValue(
+          '[id="ContentPlaceHolder1_TextBox_Zip"]',
+          crmData["Service Zip Code"]
+        );
+      }
+      if (
+        location.href.includes(
+          "affordablerentersinsurance.com/quote_confirmlocation.aspx"
+        )
+      ) {
+        const {
+          streetNumber,
+          streetDirection,
+          streetName,
+          streetType,
+          apartmentNumber
+        } = getStreetAddressParts(
+          crmData["Service Address"],
+          crmData["Service Unit/Apt"]
+        );
+
+        updateTextFieldValue(
+          '[id="ContentPlaceHolder1_TextBox_PhysAddr1"]',
+          `${streetNumber} ${streetName} ${streetType} ${streetDirection}`
+        );
+        updateTextFieldValue(
+          '[id="ContentPlaceHolder1_TextBox_PhysAddr2"]',
+          apartmentNumber
+        );
+        updateTextFieldValue(
+          '[id="ContentPlaceHolder1_TextBox_PhysCity"]',
+          crmData["Service City"]
+        );
+        updateTextFieldValue(
+          '[id="ContentPlaceHolder1_DropDownList_PhysState"]',
+          stateAbbreviation
+        );
+        updateTextFieldValue(
+          '[id="ContentPlaceHolder1_TextBox_PhysZip"]',
+          crmData["Service Zip Code"]
+        );
+        updateTextFieldValue(
+          '[id="ContentPlaceHolder1_DropDownList_ResidenceType"]',
+          "1"
+        );
+        document
+          .querySelector(
+            '[for="ContentPlaceHolder1_RadioButtonList_MultiUnitResidence_0"]'
+          )
+          .click();
+        document
+          .querySelector(
+            '[for="ContentPlaceHolder1_RadioButtonList_Mandated_0"]'
+          )
+          .click();
+        updateTextFieldValue(
+          '[id="ContentPlaceHolder1_DropDownList_YearBuilt"]',
+          "86"
+        );
+        updateTextFieldValue(
+          '[id="ContentPlaceHolder1_DropDownList_EffDate"]',
+          getDateStringNonZeroPadded(new Date(crmData["Activation Date"]))
+        );
+      }
+
+      if (
+        location.href.includes(
+          "affordablerentersinsurance.com/quote_interestedparty.aspx"
+        )
+      ) {
+        updateTextFieldValue(
+          '[id="ContentPlaceHolder1_TextBox_IPName"]',
+          crmData["Referring Appt Contact Name"] || ""
+        );
+        updateTextFieldValue(
+          '[id="ContentPlaceHolder1_TextBox_IPAddress1"]',
+          crmData["Referring Appt Street"] || ""
+        );
+        updateTextFieldValue(
+          '[id="ContentPlaceHolder1_TextBox_IPCity"]',
+          crmData["Referring Appt City"] || ""
+        );
+        updateTextFieldValue(
+          '[id="ContentPlaceHolder1_DropDownList_IPState"]',
+          STATE_TO_STATE_CODE_MAPPINGS[crmData["Referring Appt State"]] ||
+            crmData["Referring Appt State"]
+        );
+        updateTextFieldValue(
+          '[id="ContentPlaceHolder1_TextBox_IPZip"]',
+          crmData["Referring Appt Zip"] || ""
+        );
+        updateTextFieldValue(
+          '[id="ContentPlaceHolder1_TextBox_IPEmail"]',
+          crmData["Referring Appt Email"] || ""
+        );
+        updateTextFieldValue(
+          '[id="ContentPlaceHolder1_TextBox_IPPhone"]',
+          crmData["Referring Appt Phone"] || ""
+        );
+      }
+
+      if (
+        location.href.includes(
+          "affordablerentersinsurance.com/quote_insuredinfo.aspx"
+        )
+      ) {
+        updateTextFieldValue(
+          '[id="ContentPlaceHolder1_TextBox_FName"]',
+          firstName
+        );
+        updateTextFieldValue(
+          '[id="ContentPlaceHolder1_TextBox_LName"]',
+          lastName
+        );
+
+        if (crmData["Billing is same"].toLowerCase() === "true") {
+          updateCheckboxValue(
+            '[id="ContentPlaceHolder1_CheckBox_PhysicalIsMail"]',
+            true
+          );
+
+          updateTextFieldValue(
+            '[id="ContentPlaceHolder1_TextBox_MailAddr1"]',
+            crmData["Billing Address"]
+          );
+          updateTextFieldValue(
+            '[id="ContentPlaceHolder1_TextBox_MailCity"]',
+            crmData["Billing City"]
+          );
+          updateTextFieldValue(
+            '[id="ContentPlaceHolder1_TextBox_MailZip"]',
+            crmData["Billing Zip Code"]
+          );
+        }
+        updateTextFieldValue(
+          '[id="ContentPlaceHolder1_TextBox_Email1"]',
+          crmData.Email
+        );
+        updateTextFieldValue(
+          '[id="ContentPlaceHolder1_TextBox_HomePhone"]',
+          crmData.Mobile
+        );
+        updateTextFieldValue(
+          '[id="ContentPlaceHolder1_DropDownList_Month"]',
+          dateOfBirthDate.getMonth() + 1
+        );
+        updateTextFieldValue(
+          '[id="ContentPlaceHolder1_DropDownList_Day"]',
+          dateOfBirthDate.getDate()
+        );
+        updateTextFieldValue(
+          '[id="ContentPlaceHolder1_DropDownList_Year"]',
+          dateOfBirthDate.getFullYear()
+        );
+      }
+
+      if (location.href.includes("www.charter-retailportal.com/BuyFlow.aspx")) {
+        updateTextFieldValue("#StreetAddress", crmData["Service Address"]);
+        updateTextFieldValue("#AptOrUnit", crmData["Service Unit/Apt"]);
+        updateTextFieldValue("#ZipCode", crmData["Service Zip Code"]);
+      }
+    }
+  }
+
+  setInterval(() => {
+    if (currentLocation !== window.location.href) {
+      handlePage();
+    }
+  }, 500);
+})();
